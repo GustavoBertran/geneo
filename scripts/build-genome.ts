@@ -1,7 +1,8 @@
 /**
- * One-time data-bake: parse the fetched Ensembl TP53 region (GFF3 + FASTA) with
- * GeneO's own parsers and emit src/renderer/src/data/genome.ts as a static
- * assembly (real GENCODE gene models + GC signal + GC-rich regions).
+ * One-time data-bake: parse fetched Ensembl regions (GFF3 + FASTA) with GeneO's
+ * own parsers and emit src/renderer/src/data/genome.ts as static assemblies
+ * (real GENCODE gene models + GC signal + GC-rich regions). One assembly per
+ * bundled locus; the browser switches between them.
  *
  * Run: npx vite-node scripts/build-genome.ts
  */
@@ -9,87 +10,116 @@ import { readFileSync, writeFileSync } from 'fs'
 import { parseGff } from '@/genome/gff'
 import { computeGcSignal } from '@/genome/signal'
 import { gcContent } from '@core/sequence'
-import type { Chromosome, GenomeAssembly, GenomeFeature, Track } from '@/genome/types'
+import type { GenomeAssembly, GenomeFeature, Track } from '@/genome/types'
 
-const CHR17_LEN = 83257441 // GRCh38 chr17
-const WIN_START0 = 7660000 - 1
-
-const gffText = readFileSync('scripts/fixtures/tp53.gff3', 'utf-8')
-const faText = readFileSync('scripts/fixtures/tp53.fa', 'utf-8')
-const bases = faText.slice(faText.indexOf('\n') + 1).replace(/[^A-Za-z]/g, '').toUpperCase()
-
-const chrom: Chromosome = {
-  name: 'chr17',
-  length: CHR17_LEN,
-  seq: { start: WIN_START0, bases }
+interface RegionSpec {
+  id: string
+  name: string
+  chromName: string
+  chromLen: number
+  /** 1-based window start (matches the Ensembl region request). */
+  winStart1: number
+  gffPath: string
+  faPath: string
+  /** Default view, 0-based half-open chromosome coordinates. */
+  defaultLocus: { start: number; end: number }
 }
 
-const transcripts = parseGff(gffText)
-  .filter((t) => t.chrom === 'chr17')
-  .sort((a, b) => a.start - b.start)
+function buildRegion(spec: RegionSpec): { assembly: GenomeAssembly; stats: string } {
+  const winStart0 = spec.winStart1 - 1
+  const gffText = readFileSync(spec.gffPath, 'utf-8')
+  const faText = readFileSync(spec.faPath, 'utf-8')
+  const bases = faText.slice(faText.indexOf('\n') + 1).replace(/[^A-Za-z]/g, '').toUpperCase()
 
-const genesTrack: Track = {
-  id: 'trk_gencode',
-  name: 'GENCODE genes',
-  kind: 'genes',
-  visible: true,
-  transcripts
-}
+  const chrom = { name: spec.chromName, length: spec.chromLen, seq: { start: winStart0, bases } }
 
-const gcTrack: Track = {
-  id: 'trk_gc',
-  name: 'GC Percent',
-  kind: 'signal',
-  visible: true,
-  color: '#5fb88f',
-  signal: computeGcSignal(chrom, 200)
-}
+  const transcripts = parseGff(gffText)
+    .filter((t) => t.chrom === spec.chromName)
+    .sort((a, b) => a.start - b.start)
 
-// GC-rich regions: 200 bp windows with GC >= 55%, merged when adjacent.
-const win = 200
-const rich: GenomeFeature[] = []
-let runStart = -1
-for (let i = 0; i < bases.length; i += win) {
-  const gc = gcContent(bases.slice(i, i + win))
-  const pos = WIN_START0 + i
-  if (gc >= 0.55) {
-    if (runStart < 0) runStart = pos
-  } else if (runStart >= 0) {
-    rich.push({ id: `gcrich_${runStart}`, name: 'GC-rich', chrom: 'chr17', start: runStart, end: pos, strand: 0, type: 'region', color: '#c0a040' })
-    runStart = -1
+  const genesTrack: Track = { id: 'trk_gencode', name: 'GENCODE genes', kind: 'genes', visible: true, transcripts }
+  const gcTrack: Track = {
+    id: 'trk_gc',
+    name: 'GC Percent',
+    kind: 'signal',
+    visible: true,
+    color: '#5fb88f',
+    signal: computeGcSignal(chrom, 200)
   }
-}
-if (runStart >= 0) rich.push({ id: `gcrich_${runStart}`, name: 'GC-rich', chrom: 'chr17', start: runStart, end: WIN_START0 + bases.length, strand: 0, type: 'region', color: '#c0a040' })
 
-const richTrack: Track = {
-  id: 'trk_gcrich',
-  name: 'GC-rich regions',
-  kind: 'features',
-  visible: true,
-  features: rich
+  // GC-rich regions: 200 bp windows with GC >= 55%, merged when adjacent.
+  const win = 200
+  const rich: GenomeFeature[] = []
+  let runStart = -1
+  for (let i = 0; i < bases.length; i += win) {
+    const gc = gcContent(bases.slice(i, i + win))
+    const pos = winStart0 + i
+    if (gc >= 0.55) {
+      if (runStart < 0) runStart = pos
+    } else if (runStart >= 0) {
+      rich.push({ id: `gcrich_${spec.chromName}_${runStart}`, name: 'GC-rich', chrom: spec.chromName, start: runStart, end: pos, strand: 0, type: 'region', color: '#c0a040' })
+      runStart = -1
+    }
+  }
+  if (runStart >= 0) rich.push({ id: `gcrich_${spec.chromName}_${runStart}`, name: 'GC-rich', chrom: spec.chromName, start: runStart, end: winStart0 + bases.length, strand: 0, type: 'region', color: '#c0a040' })
+
+  const richTrack: Track = { id: 'trk_gcrich', name: 'GC-rich regions', kind: 'features', visible: true, features: rich }
+
+  const assembly: GenomeAssembly = {
+    id: spec.id,
+    name: spec.name,
+    chromosomes: [chrom],
+    tracks: [genesTrack, richTrack, gcTrack],
+    defaultLocus: { chrom: spec.chromName, start: spec.defaultLocus.start, end: spec.defaultLocus.end }
+  }
+  const stats = `${spec.name}: ${transcripts.length} transcripts, ${rich.length} GC-rich, ${gcTrack.signal!.spans.length} GC bins, ${bases.length} bp`
+  return { assembly, stats }
 }
 
-const assembly: GenomeAssembly = {
-  id: 'grch38_tp53',
-  name: 'Human GRCh38 — TP53 locus',
-  chromosomes: [chrom],
-  tracks: [genesTrack, richTrack, gcTrack],
-  defaultLocus: { chrom: 'chr17', start: 7661000, end: 7688500 }
-}
+const REGIONS: RegionSpec[] = [
+  {
+    id: 'grch38_tp53',
+    name: 'TP53 locus (chr17)',
+    chromName: 'chr17',
+    chromLen: 83257441,
+    winStart1: 7660000,
+    gffPath: 'scripts/fixtures/tp53.gff3',
+    faPath: 'scripts/fixtures/tp53.fa',
+    defaultLocus: { start: 7661000, end: 7688500 }
+  },
+  {
+    id: 'grch38_palb2',
+    name: 'PALB2 locus (chr16)',
+    chromName: 'chr16',
+    chromLen: 90338345,
+    winStart1: 23580000,
+    gffPath: 'scripts/fixtures/palb2.gff3',
+    faPath: 'scripts/fixtures/palb2.fa',
+    defaultLocus: { start: 23600000, end: 23650000 }
+  }
+]
+
+const built = REGIONS.map(buildRegion)
+const assemblies = built.map((b) => b.assembly)
 
 const header = `/**
- * Bundled sample genome assembly — the real human TP53 locus (Ensembl GRCh38
- * chr17:7,660,000-7,700,000): GENCODE gene models, a GC-percent signal track,
- * and computed GC-rich regions. GENERATED by scripts/build-genome.ts — do not
- * edit by hand.
+ * Bundled sample genome assemblies — real human loci from Ensembl GRCh38, with
+ * GENCODE gene models, a GC-percent signal track, and computed GC-rich regions.
+ * GENERATED by scripts/build-genome.ts — do not edit by hand.
+ *   - TP53  locus, chr17:7,660,000-7,700,000
+ *   - PALB2 locus, chr16:23,580,000-23,700,000 (PALB2, PLK1, NDUFAB1, DCTN5, ERN2)
  */
 import type { GenomeAssembly } from '../genome/types'
 
-export const sampleGenome: GenomeAssembly = `
+export const sampleGenomes: GenomeAssembly[] = `
 
-writeFileSync(
-  'src/renderer/src/data/genome.ts',
-  header + JSON.stringify(assembly) + '\n'
-)
+const footer = `
 
-console.log(`Wrote data/genome.ts: ${transcripts.length} transcripts, ${rich.length} GC-rich regions, ${gcTrack.signal!.spans.length} GC bins, ${bases.length} bp sequence.`)
+/** Default genome shown on first load. */
+export const sampleGenome: GenomeAssembly = sampleGenomes[0]
+`
+
+writeFileSync('src/renderer/src/data/genome.ts', header + JSON.stringify(assemblies) + footer)
+
+console.log('Wrote data/genome.ts:')
+for (const b of built) console.log('  - ' + b.stats)

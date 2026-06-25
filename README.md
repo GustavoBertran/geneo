@@ -29,7 +29,7 @@ The app ships with the real **pUC19** cloning vector (GenBank L09137) loaded by 
 - Binding-site search, primer design for a selected region, and full PCR product simulation (circular-aware).
 
 **Genome browser** (UCSC-style)
-- A chromosome-scale, multi-track viewer separate from the plasmid tools. Ships with the real human **TP53 locus** (Ensembl GRCh38 chr17): all GENCODE isoforms with exon/intron structure, thick-CDS / thin-UTR gene glyphs, and strand arrows (TP53 minus-strand arrows point left; WRAP53 plus-strand point right).
+- A chromosome-scale, multi-track viewer separate from the plasmid tools. Ships with two real human loci you can switch between — the **TP53 locus** (Ensembl GRCh38 chr17) and the **PALB2 locus** (chr16, also covering PLK1/NDUFAB1/DCTN5/ERN2) — each with all GENCODE isoforms, exon/intron structure, thick-CDS / thin-UTR gene glyphs, and strand arrows (e.g. TP53 minus-strand arrows point left; WRAP53 plus-strand point right).
 - Tracks: gene models, generic interval features (BED), a quantitative signal track (GC percent / bedGraph / WIG, aggregated to pixel columns), and a zoom-gated reference-sequence track that renders colored bases only when legible.
 - Navigation: locus box (`chr17:7,668,000-7,688,000`), gene-name search, zoom/pan buttons, drag-to-pan, scroll-to-zoom, per-track visibility.
 - **Position markers** (karyoploteR-style): add a labeled vertical rule at any coordinate (`7,668,421` or `chr17:7,668,421`); markers span every track and are removable from chips.

@@ -5,6 +5,7 @@ import { serializeGenBank } from '@core/genbank'
 import { serializeFasta } from '@core/fasta'
 import { samplePlasmid } from '@data/sample'
 import { puc19 } from '@data/puc19'
+import { sampleGenomes } from '@data/genome'
 import { loadGenomeFile } from '../genome/io'
 import { Logo } from './Logo'
 
@@ -26,6 +27,8 @@ export function Toolbar(): JSX.Element {
   const record = useStore((s) => s.record)
   const mergeGenomeData = useStore((s) => s.mergeGenomeData)
   const setLocus = useStore((s) => s.setLocus)
+  const setAssembly = useStore((s) => s.setAssembly)
+  const assembly = useStore((s) => s.assembly)
 
   async function onLoadGenome(): Promise<void> {
     const res = await window.api.openFile({
@@ -106,6 +109,20 @@ export function Toolbar(): JSX.Element {
 
       {viewMode === 'genome' ? (
         <div className="no-drag row" style={{ gap: 6 }}>
+          <select
+            value={sampleGenomes.some((g) => g.id === assembly?.id) ? assembly!.id : ''}
+            title="Switch the bundled genome locus"
+            onChange={(e) => {
+              const a = sampleGenomes.find((g) => g.id === e.target.value)
+              if (a) setAssembly(a)
+            }}
+            style={{ background: 'var(--bg-input)' }}
+          >
+            <option value="" disabled>Sample locus…</option>
+            {sampleGenomes.map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
           <button onClick={onLoadGenome} title="Load GFF3 / BED / bedGraph / FASTA as a track">Load track…</button>
         </div>
       ) : (
