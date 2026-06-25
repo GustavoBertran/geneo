@@ -1,0 +1,59 @@
+{
+  "name": "geneo",
+  "version": "0.1.0",
+  "description": "GeneO — a molecular biology workbench for plasmid design, cloning, and sequence analysis (a SnapGene-equivalent)",
+  "main": "out/main/index.js",
+  "author": "GeneO",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "web": "vite",
+    "verify": "vite-node scripts/verify.ts",
+    "verify:genome": "vite-node scripts/verify-genome.ts",
+    "build": "electron-vite build",
+    "build:dir": "electron-vite build && electron-builder --dir",
+    "package:mac": "electron-vite build && electron-builder --mac",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web"
+  },
+  "build": {
+    "appId": "com.geneo.app",
+    "productName": "GeneO",
+    "copyright": "GeneO",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": false,
+    "mac": {
+      "target": "dir",
+      "category": "public.app-category.education",
+      "icon": "build/icon.png",
+      "identity": null
+    }
+  },
+  "dependencies": {
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vite-node": "^2.1.9"
+  }
+}
