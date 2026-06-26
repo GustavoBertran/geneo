@@ -11,7 +11,7 @@ const PLOT_H = H - PAD_TOP - PAD_BOTTOM
  * per-pixel columns (max aggregation) so we draw one filled area path regardless
  * of how many thousands of spans overlap the viewport.
  */
-export function SignalTrack({ track, viewport }: GenomeTrackProps): JSX.Element {
+export function SignalTrack({ track, viewport, onSignalSelect }: GenomeTrackProps): JSX.Element {
   const { width, bpToPx, pxToBp } = viewport
   const signal = track.signal
   const color = track.color || 'var(--good)'
@@ -125,6 +125,15 @@ export function SignalTrack({ track, viewport }: GenomeTrackProps): JSX.Element 
         setHoverX(Math.round(e.clientX - rect.left))
       }}
       onMouseLeave={() => setHoverX(null)}
+      onClick={(e) => {
+        if (!onSignalSelect) return
+        const rect = e.currentTarget.getBoundingClientRect()
+        const x = Math.round(e.clientX - rect.left)
+        if (x < 0 || x >= W) return
+        const v = col[x]
+        if (v === -Infinity) return
+        onSignalSelect({ value: v, bp: Math.round(pxToBp(x)) })
+      }}
     >
       {/* baseline */}
       <line

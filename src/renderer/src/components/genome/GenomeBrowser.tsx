@@ -12,7 +12,7 @@ import {
   clampLocus,
   normalizeChromName
 } from '../../genome/viewport'
-import type { Chromosome, GenomeTrackProps, Locus, Track } from '../../genome/types'
+import type { Chromosome, GenomeFeature, GenomeTrackProps, Locus, Track, Transcript } from '../../genome/types'
 import { buildSnapshotSvg, rasterizeSvgToPng, downloadInBrowser } from '../../genome/export'
 import { ENSEMBL_SPECIES, fetchEnsemblAssembly, ENSEMBL_TRACKS, fetchEnsemblTrack } from '../../genome/ensembl'
 import { computeCpgIslands } from '../../genome/compute'
@@ -25,6 +25,71 @@ import { SequenceTrack } from './SequenceTrack'
 const GUTTER = 140 // px reserved for track labels on the left
 const RULER_H = 30
 const MARKER_COLOR = '#e8b339'
+
+type GenomeItem =
+  | { kind: 'transcript'; item: Transcript; trackName: string }
+  | { kind: 'feature'; item: GenomeFeature; trackName: string }
+
+function strandLabel(s: number): string {
+  return s === -1 ? '− (reverse)' : s === 1 ? '+ (forward)' : 'unstranded'
+}
+
+function loc(chrom: string, start: number, end: number): string {
+  return `${chrom}:${(start + 1).toLocaleString()}–${end.toLocaleString()}`
+}
+
+function fmtSignal(v: number): string {
+  const a = Math.abs(v)
+  if (a !== 0 && (a < 0.01 || a >= 100000)) return v.toExponential(2)
+  return Number.isInteger(v) ? String(v) : v.toFixed(2)
+}
+
+/** Accent color for the popup header swatch. */
+function itemColor(g: GenomeItem): string {
+  if (g.kind === 'feature') return g.item.color ?? 'var(--accent)'
+  return g.item.biotype === 'protein_coding' ? 'var(--accent)' : '#9d6bcf'
+}
+
+/** One-line summary for the hover tooltip. */
+function itemSummary(g: GenomeItem): string {
+  if (g.kind === 'transcript') {
+    const t = g.item
+    return `${t.geneName ?? t.name}${t.geneName ? ` · ${t.name}` : ''}`
+  }
+  return g.item.name ?? g.item.type ?? 'feature'
+}
+
+/** Full key/value detail rows for the click popup. */
+function itemRows(g: GenomeItem): [string, string][] {
+  if (g.kind === 'transcript') {
+    const t = g.item
+    return [
+      ['Gene', t.geneName ?? '—'],
+      ['Transcript', t.name],
+      ['ID', t.id],
+      ['Biotype', t.biotype ?? '—'],
+      ['Strand', strandLabel(t.strand)],
+      ['Location', loc(t.chrom, t.start, t.end)],
+      ['Length', `${(t.end - t.start).toLocaleString()} bp`],
+      ['Exons', String(t.exons.length)],
+      ['CDS blocks', String(t.cds.length)],
+      ['Track', g.trackName]
+    ]
+  }
+  const f = g.item
+  const rows: [string, string][] = [
+    ['Name', f.name ?? '—'],
+    ['Type', f.type ?? '—'],
+    ['ID', f.id],
+    ['Strand', strandLabel(f.strand)],
+    ['Location', loc(f.chrom, f.start, f.end)],
+    ['Length', `${(f.end - f.start).toLocaleString()} bp`],
+    ['Track', g.trackName]
+  ]
+  if (f.score != null) rows.splice(3, 0, ['Score', String(f.score)])
+  if (f.blocks && f.blocks.length) rows.push(['Blocks', String(f.blocks.length)])
+  return rows
+}
 
 function useWidth(): [React.RefObject<HTMLDivElement>, number] {
   const ref = useRef<HTMLDivElement>(null)
@@ -113,21 +178,45 @@ export function GenomeBrowser(): JSX.Element {
     if (locus) setLocusText(formatLocus(locus))
   }, [locus])
 
+  // Detail popup anchor + a clicked signal point (declared early; the Esc effect reads them).
+  const [popupAnchor, setPopupAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [signalPopup, setSignalPopup] = useState<{ trackName: string; color: string; value: number; bp: number } | null>(null)
+
+  // Esc closes the detail popup (feature or signal).
+  useEffect(() => {
+    if (!selectedGenomeId && !signalPopup) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        setSelectedGenomeId(null)
+        setSignalPopup(null)
+        setPopupAnchor(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectedGenomeId, signalPopup, setSelectedGenomeId])
+
   const searchIndex = useMemo(() => buildSearchIndex(assembly?.tracks ?? []), [assembly])
 
-  const selected = useMemo(() => {
-    if (!selectedGenomeId || !assembly) return null
+  const findItem = (id: string | null): GenomeItem | null => {
+    if (!id || !assembly) return null
     for (const t of assembly.tracks) {
-      const tr = t.transcripts?.find((x) => x.id === selectedGenomeId)
-      if (tr) return { kind: 'transcript' as const, item: tr }
-      const f = t.features?.find((x) => x.id === selectedGenomeId)
-      if (f) return { kind: 'feature' as const, item: f }
+      const tr = t.transcripts?.find((x) => x.id === id)
+      if (tr) return { kind: 'transcript', item: tr, trackName: t.name }
+      const f = t.features?.find((x) => x.id === id)
+      if (f) return { kind: 'feature', item: f, trackName: t.name }
     }
     return null
-  }, [assembly, selectedGenomeId])
+  }
+  const selected = useMemo(() => findItem(selectedGenomeId), [assembly, selectedGenomeId])
+  const hovered = useMemo(() => findItem(hoveredGenomeId), [assembly, hoveredGenomeId])
 
   // drag-to-pan state
   const drag = useRef<{ x: number; startLocus: Locus } | null>(null)
+  // cursor tracking + detail popup anchor (relative to the browser root)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
+  const mousePosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
 
   if (!assembly || !locus || !chrom) {
     return (
@@ -188,6 +277,58 @@ export function GenomeBrowser(): JSX.Element {
     drag.current = null
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch { /* noop */ }
   }
+
+  // Track the cursor (relative to the browser root) and move the hover tooltip
+  // imperatively, so following the cursor doesn't re-render the heavy tracks.
+  const onRootMouseMove = (e: React.MouseEvent): void => {
+    const root = rootRef.current
+    if (!root) return
+    const rect = root.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    mousePosRef.current = { x, y }
+    const tip = tooltipRef.current
+    if (tip) {
+      const flipX = x > rect.width - 260
+      tip.style.transform = `translate(${flipX ? x - 250 : x + 14}px, ${y + 16}px)`
+    }
+  }
+
+  // Clicking a feature selects it AND opens the detail popup at the cursor.
+  const onSelectFeature = (id: string | null): void => {
+    setSignalPopup(null)
+    setSelectedGenomeId(id)
+    setPopupAnchor(id ? { ...mousePosRef.current } : null)
+  }
+
+  // Clicking a signal track opens the same popup with the value at that point.
+  const onSignalSelect = (track: Track, probe: { value: number; bp: number }): void => {
+    setSelectedGenomeId(null)
+    setSignalPopup({ trackName: track.name, color: track.color || 'var(--good)', value: probe.value, bp: probe.bp })
+    setPopupAnchor({ ...mousePosRef.current })
+  }
+
+  const closePopup = (): void => {
+    setSelectedGenomeId(null)
+    setSignalPopup(null)
+    setPopupAnchor(null)
+  }
+
+  // The popup renders from either a selected feature/transcript or a signal point.
+  const popupModel: { color: string; title: string; rows: [string, string][] } | null = selected
+    ? { color: itemColor(selected), title: itemSummary(selected), rows: itemRows(selected) }
+    : signalPopup
+      ? {
+          color: signalPopup.color,
+          title: signalPopup.trackName,
+          rows: [
+            ['Track', signalPopup.trackName],
+            ['Value', fmtSignal(signalPopup.value)],
+            ['Position', `${locus.chrom}:${(signalPopup.bp + 1).toLocaleString()}`],
+            ['Type', 'signal (quantitative)']
+          ]
+        }
+      : null
 
   // Add a marker. Input is a 1-based coordinate ("7,668,421" or
   // "chr17:7,668,421") for a vertical rule, OR a 1-based range
@@ -340,7 +481,11 @@ export function GenomeBrowser(): JSX.Element {
   })
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div
+      ref={rootRef}
+      onMouseMove={onRootMouseMove}
+      style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, position: 'relative' }}
+    >
       {/* Navigation bar */}
       <div
         style={{
@@ -598,8 +743,9 @@ export function GenomeBrowser(): JSX.Element {
                       viewport={viewport}
                       selectedId={selectedGenomeId}
                       hoveredId={hoveredGenomeId}
-                      onSelect={setSelectedGenomeId}
+                      onSelect={onSelectFeature}
                       onHover={setHoveredGenomeId}
+                      onSignalSelect={(probe) => onSignalSelect(track, probe)}
                     />
                   ) : (
                     <div style={{ height: 20, display: 'flex', alignItems: 'center', paddingLeft: 8, color: 'var(--text-faint)', fontSize: 10 }}>
@@ -664,6 +810,69 @@ export function GenomeBrowser(): JSX.Element {
         </div>
       )}
       </div>
+
+      {/* Hover tooltip — follows the cursor (position updated imperatively) */}
+      {hovered && (
+        <div
+          ref={tooltipRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            transform: `translate(${mousePosRef.current.x + 14}px, ${mousePosRef.current.y + 16}px)`,
+            pointerEvents: 'none',
+            zIndex: 50,
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '5px 9px',
+            boxShadow: 'var(--shadow)',
+            maxWidth: 260
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemSummary(hovered)}</div>
+          <div className="dim" style={{ fontSize: 11, fontFamily: 'var(--mono)' }}>{loc(hovered.item.chrom, hovered.item.start, hovered.item.end)}</div>
+          <div className="faint" style={{ fontSize: 10 }}>
+            {hovered.kind === 'transcript' ? hovered.item.biotype ?? 'transcript' : hovered.trackName} · {strandLabel(hovered.item.strand)} · click for details
+          </div>
+        </div>
+      )}
+
+      {/* Click detail popup — full info, dismissable (feature/transcript or signal point) */}
+      {popupModel && popupAnchor && (
+        <div
+          style={{
+            position: 'absolute',
+            left: Math.max(8, Math.min(popupAnchor.x + 8, (rootRef.current?.clientWidth ?? 900) - 286)),
+            top: Math.max(8, Math.min(popupAnchor.y + 8, (rootRef.current?.clientHeight ?? 600) - 300)),
+            zIndex: 60,
+            width: 278,
+            background: 'var(--bg-panel)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius)',
+            boxShadow: 'var(--shadow)',
+            overflow: 'hidden'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--border)' }}>
+            <span style={{ width: 11, height: 11, borderRadius: 3, background: popupModel.color, flexShrink: 0 }} />
+            <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{popupModel.title}</span>
+            <button className="ghost" onClick={closePopup} title="Close (Esc)" style={{ padding: '0 5px', lineHeight: 1, fontSize: 15, color: 'var(--text-faint)' }}>×</button>
+          </div>
+          <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+            <table style={{ width: '100%', fontSize: 11.5, borderCollapse: 'collapse' }}>
+              <tbody>
+                {popupModel.rows.map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ color: 'var(--text-faint)', padding: '3px 10px', verticalAlign: 'top', whiteSpace: 'nowrap' }}>{k}</td>
+                    <td style={{ padding: '3px 10px', wordBreak: 'break-all', fontFamily: k === 'Location' || k === 'ID' || k === 'Position' ? 'var(--mono)' : undefined }}>{v}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Footer: selection details */}
       <div

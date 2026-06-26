@@ -167,4 +167,6 @@ export interface GenomeTrackProps {
   hoveredId: string | null
   onSelect: (id: string | null) => void
   onHover: (id: string | null) => void
+  /** Signal tracks only: a click reports the value + position under the cursor. */
+  onSignalSelect?: (probe: { value: number; bp: number }) => void
 }
