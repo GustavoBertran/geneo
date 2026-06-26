@@ -14,7 +14,9 @@ import {
 } from '../../genome/viewport'
 import type { Chromosome, GenomeTrackProps, Locus, Track } from '../../genome/types'
 import { buildSnapshotSvg, rasterizeSvgToPng, downloadInBrowser } from '../../genome/export'
-import { ENSEMBL_SPECIES, fetchEnsemblAssembly } from '../../genome/ensembl'
+import { ENSEMBL_SPECIES, fetchEnsemblAssembly, ENSEMBL_TRACKS, fetchEnsemblTrack } from '../../genome/ensembl'
+import { computeCpgIslands } from '../../genome/compute'
+import { makeId } from '@core/sequence'
 import { GeneTrack } from './GeneTrack'
 import { FeatureTrack } from './FeatureTrack'
 import { SignalTrack } from './SignalTrack'
@@ -85,6 +87,8 @@ export function GenomeBrowser(): JSX.Element {
   const clearMarkers = useStore((s) => s.clearMarkers)
   const setAssembly = useStore((s) => s.setAssembly)
   const addRecent = useStore((s) => s.addRecent)
+  const addTrack = useStore((s) => s.addTrack)
+  const removeTrack = useStore((s) => s.removeTrack)
 
   const [wrapRef, fullWidth] = useWidth()
   const trackWidth = Math.max(120, fullWidth - GUTTER)
@@ -97,6 +101,8 @@ export function GenomeBrowser(): JSX.Element {
   const [fetchQuery, setFetchQuery] = useState('')
   const [fetching, setFetching] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [addingTrack, setAddingTrack] = useState(false)
+  const [trackError, setTrackError] = useState<string | null>(null)
 
   const chrom: Chromosome | undefined = useMemo(
     () => assembly?.chromosomes.find((c) => c.name === locus?.chrom) ?? assembly?.chromosomes[0],
@@ -250,6 +256,34 @@ export function GenomeBrowser(): JSX.Element {
       setFetchError((e as Error).message)
     } finally {
       setFetching(false)
+    }
+  }
+
+  // Add an annotation track for the current region (Ensembl-fetched or computed).
+  const onAddTrack = async (specId: string): Promise<void> => {
+    const spec = ENSEMBL_TRACKS.find((t) => t.id === specId)
+    if (!spec) return
+    setTrackError(null)
+    if (spec.computed) {
+      const features = computeCpgIslands(chrom)
+      if (features.length === 0) {
+        setTrackError('No CpG islands found in the loaded sequence window.')
+        return
+      }
+      addTrack({ id: makeId('trk_cpg'), name: spec.name, kind: 'features', visible: true, color: spec.color, features })
+      return
+    }
+    setAddingTrack(true)
+    try {
+      const sp = assembly.species ?? species
+      const res = await fetchEnsemblTrack(sp, locus.chrom, locus.start + 1, locus.end, spec)
+      if (res.error || !res.track) {
+        setTrackError(res.error ?? 'Could not add track')
+        return
+      }
+      addTrack(res.track)
+    } finally {
+      setAddingTrack(false)
     }
   }
 
@@ -449,6 +483,30 @@ export function GenomeBrowser(): JSX.Element {
         )}
 
         <span className="spacer" />
+        {trackError && <span style={{ color: 'var(--bad)', fontSize: 11, maxWidth: 300 }}>{trackError}</span>}
+        <select
+          value=""
+          title="Add an annotation track for the current region"
+          disabled={addingTrack}
+          onChange={(e) => {
+            const v = e.target.value
+            e.target.value = ''
+            if (v) void onAddTrack(v)
+          }}
+          style={{ background: 'var(--bg-input)', fontSize: 12 }}
+        >
+          <option value="">{addingTrack ? 'Adding…' : '+ Track ▾'}</option>
+          <optgroup label="Ensembl (this region)">
+            {ENSEMBL_TRACKS.filter((t) => !t.computed).map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </optgroup>
+          <optgroup label="Computed">
+            {ENSEMBL_TRACKS.filter((t) => t.computed).map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </optgroup>
+        </select>
         <button onClick={() => void saveSnapshot('png')} title="Export the current view as a PNG image">Export PNG</button>
         <button onClick={() => void saveSnapshot('svg')} title="Export the current view as an SVG">Export SVG</button>
       </div>
@@ -511,10 +569,17 @@ export function GenomeBrowser(): JSX.Element {
                     title={isVisible ? `Hide ${track.name}` : `Show ${track.name}`}
                     style={{ marginTop: 1 }}
                   />
-                  <div style={{ minWidth: 0 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{track.name}</div>
                     <div className="faint" style={{ fontSize: 9 }}>{track.kind}</div>
                   </div>
+                  <button
+                    className="ghost"
+                    onClick={() => removeTrack(track.id)}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    title={`Remove ${track.name}`}
+                    style={{ padding: '0 3px', marginTop: -1, lineHeight: 1, color: 'var(--text-faint)', fontSize: 13 }}
+                  >×</button>
                 </div>
                 <div
                   // only tag VISIBLE tracks so snapshot export skips hidden ones

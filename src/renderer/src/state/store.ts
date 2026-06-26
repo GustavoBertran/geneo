@@ -128,6 +128,9 @@ export interface AppState {
     tracks: Track[]
     sequence?: { chrom: string; start: number; bases: string }
   }) => void
+  /** Add (or replace, by name) a single annotation track on the assembly. */
+  addTrack: (track: Track) => void
+  removeTrack: (id: string) => void
   setSelectedGenomeId: (id: string | null) => void
   setHoveredGenomeId: (id: string | null) => void
 
@@ -294,6 +297,23 @@ export const useStore = create<AppState>((set) => ({
     set((s) => ({ markers: [...s.markers, { ...marker, id: marker.id ?? makeId('mark') }] })),
   removeMarker: (id) => set((s) => ({ markers: s.markers.filter((m) => m.id !== id) })),
   clearMarkers: () => set({ markers: [] }),
+
+  addTrack: (track) =>
+    set((s) => {
+      if (!s.assembly) return s
+      const tracks = [...s.assembly.tracks.filter((t) => t.name !== track.name), track]
+      return {
+        assembly: { ...s.assembly, tracks },
+        trackVisibility: { ...s.trackVisibility, [track.id]: track.visible }
+      }
+    }),
+  removeTrack: (id) =>
+    set((s) => {
+      if (!s.assembly) return s
+      const vis = { ...s.trackVisibility }
+      delete vis[id]
+      return { assembly: { ...s.assembly, tracks: s.assembly.tracks.filter((t) => t.id !== id) }, trackVisibility: vis }
+    }),
 
   setSelectedGenomeId: (id) => set({ selectedGenomeId: id }),
   setHoveredGenomeId: (id) => set({ hoveredGenomeId: id }),

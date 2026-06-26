@@ -2,11 +2,12 @@
 // The renderer's CSP allows connect-src https://rest.ensembl.org; we use the
 // global fetch() (no node imports). Everything is caught — fetchEnsemblAssembly
 // never throws, it returns { assembly } or { error }.
-import type { Chromosome, GenomeAssembly, Locus, Track } from './types'
+import type { Chromosome, GenomeAssembly, GenomeFeature, Locus, Track } from './types'
 import { parseGff } from './gff'
 import { parseFastaRegion } from './io'
 import { computeGcSignal } from './signal'
 import { normalizeChromName } from './viewport'
+import { makeId } from '../core/sequence'
 
 /** A selectable Ensembl species + its reference assembly name. */
 export interface EnsemblSpecies {
@@ -226,9 +227,131 @@ export async function fetchEnsemblAssembly(speciesId: string, query: string): Pr
       name: `${geneSymbol ?? chrom} · ${label}`,
       chromosomes: [chromosome],
       tracks: [genesTrack, gcTrack],
-      defaultLocus
+      defaultLocus,
+      species: speciesId
     }
     return { assembly }
+  } catch {
+    return { error: 'Network error contacting Ensembl — check your connection.' }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Additional annotation tracks (UCSC-style "add track") for a region.
+// ---------------------------------------------------------------------------
+
+export interface EnsemblTrackSpec {
+  /** Stable id used in the menu + track id. */
+  id: string
+  /** Ensembl ?feature= value; '' for a locally-computed track (CpG islands). */
+  feature: string
+  name: string
+  color: string
+  /** Largest region this track may be fetched for (dense data is capped). */
+  maxBp?: number
+  /** Computed locally from the reference sequence rather than fetched. */
+  computed?: boolean
+}
+
+export const ENSEMBL_TRACKS: EnsemblTrackSpec[] = [
+  { id: 'regulatory', feature: 'regulatory', name: 'Regulatory features', color: '#cf6b8d' },
+  { id: 'repeat', feature: 'repeat', name: 'Repeat regions', color: '#8aa0b8', maxBp: 2_000_000 },
+  { id: 'constrained', feature: 'constrained', name: 'Conservation (constrained)', color: '#3acfa6' },
+  { id: 'variation', feature: 'variation', name: 'Variants (SNPs)', color: '#d8a43c', maxBp: 100_000 },
+  { id: 'cpg', feature: '', name: 'CpG islands (computed)', color: '#59b85f', computed: true }
+]
+
+// Keyed on the lowercase Ensembl regulatory `description` value.
+const REGULATORY_COLORS: Record<string, string> = {
+  promoter: '#d8694d',
+  promoter_flanking_region: '#cf8d3a',
+  enhancer: '#cf6b8d',
+  ctcf_binding_site: '#4f9dde',
+  tf_binding_site: '#9d6bcf',
+  open_chromatin_region: '#5fb88f'
+}
+
+/** "CTCF_binding_site" -> "CTCF binding site"; "enhancer" -> "Enhancer". */
+function regulatoryLabel(desc?: string): string {
+  if (!desc) return 'regulatory'
+  const s = desc.replace(/_/g, ' ')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+interface OverlapFeature {
+  seq_region_name?: string
+  start?: number
+  end?: number
+  strand?: number
+  id?: string
+  feature_type?: string
+  description?: string
+  consequence_type?: string
+  score?: number
+}
+
+/** Fetch one annotation track (regulatory / repeat / constrained / variation). */
+export async function fetchEnsemblTrack(
+  speciesId: string,
+  chromName: string,
+  start1: number,
+  end1: number,
+  spec: EnsemblTrackSpec
+): Promise<{ track?: Track; error?: string }> {
+  if (spec.computed) return { error: 'Computed track — build it from the reference sequence locally.' }
+  if (!(start1 < end1)) return { error: 'Invalid region.' }
+  if (spec.maxBp && end1 - start1 + 1 > spec.maxBp) {
+    return { error: `Zoom in to under ${(spec.maxBp / 1000).toLocaleString()} kb to add ${spec.name.toLowerCase()}.` }
+  }
+  const apiChrom = toApiChrom(chromName)
+  const url =
+    `${ENSEMBL_BASE}/overlap/region/${encodeURIComponent(speciesId)}/${apiChrom}:${start1}-${end1}` +
+    `?feature=${encodeURIComponent(spec.feature)};content-type=application/json`
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return { error: await ensemblErrorMessage(res, `Ensembl could not return ${spec.name.toLowerCase()}.`) }
+    const data = (await res.json()) as OverlapFeature[]
+    if (!Array.isArray(data)) return { error: 'Unexpected response from Ensembl.' }
+    const chrom = normalizeChromName(chromName)
+    const MAX_FEATURES = 6000
+    const features: GenomeFeature[] = []
+    for (const f of data) {
+      if (features.length >= MAX_FEATURES) break
+      const s = f.start
+      const e = f.end
+      if (!Number.isFinite(s) || !Number.isFinite(e)) continue
+      let name: string
+      let color = spec.color
+      if (spec.id === 'regulatory') {
+        name = regulatoryLabel(f.description)
+        color = REGULATORY_COLORS[(f.description ?? '').toLowerCase()] ?? spec.color
+      } else if (spec.id === 'variation') {
+        name = f.id ?? 'variant'
+      } else {
+        name = f.description ?? f.feature_type ?? f.id ?? spec.name
+      }
+      features.push({
+        id: f.id ?? makeId(spec.id),
+        name,
+        chrom,
+        start: (s as number) - 1,
+        end: e as number,
+        strand: f.strand === 1 ? 1 : f.strand === -1 ? -1 : 0,
+        type: spec.id,
+        score: f.score,
+        color
+      })
+    }
+    if (features.length === 0) return { error: `No ${spec.name.toLowerCase()} in this region.` }
+    const track: Track = {
+      id: makeId('trk_' + spec.id),
+      name: features.length >= MAX_FEATURES ? `${spec.name} (first ${MAX_FEATURES})` : spec.name,
+      kind: 'features',
+      visible: true,
+      color: spec.color,
+      features
+    }
+    return { track }
   } catch {
     return { error: 'Network error contacting Ensembl — check your connection.' }
   }

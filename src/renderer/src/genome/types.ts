@@ -129,6 +129,8 @@ export interface GenomeAssembly {
   tracks: Track[]
   /** Optional default view when the assembly is first opened. */
   defaultLocus?: Locus
+  /** Ensembl species id (e.g. 'homo_sapiens') for on-demand track fetching. */
+  species?: string
 }
 
 // ---------------------------------------------------------------------------
