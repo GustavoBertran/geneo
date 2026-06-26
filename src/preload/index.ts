@@ -19,7 +19,10 @@ const api = {
   saveImage: (args: {
     dataUrl: string
     defaultName?: string
-  }): Promise<{ canceled: boolean; path?: string }> => ipcRenderer.invoke('file:save-image', args)
+  }): Promise<{ canceled: boolean; path?: string }> => ipcRenderer.invoke('file:save-image', args),
+
+  readPath: (path: string): Promise<{ ok: boolean; name?: string; content?: string; error?: string }> =>
+    ipcRenderer.invoke('file:read-path', path)
 }
 
 contextBridge.exposeInMainWorld('api', api)

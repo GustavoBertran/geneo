@@ -4,6 +4,7 @@ import { StatusBar } from '@components/StatusBar'
 import { CenterView } from '@components/CenterView'
 import { InspectorPanel } from '@components/InspectorPanel'
 import { GenomeBrowser } from '@components/genome/GenomeBrowser'
+import { FilesView } from '@components/FilesView'
 import { Logo } from '@components/Logo'
 import { useStore } from '@state/store'
 
@@ -11,14 +12,14 @@ export default function App(): JSX.Element {
   const record = useStore((s) => s.record)
   const viewMode = useStore((s) => s.viewMode)
 
-  // The genome browser is a chromosome-scale tool with its own layout; it does
-  // not depend on an open plasmid record.
-  if (viewMode === 'genome') {
+  // The genome browser and Files list are full-width tools with their own
+  // layout; neither depends on an open plasmid record.
+  if (viewMode === 'genome' || viewMode === 'files') {
     return (
       <div className="app" style={{ gridTemplateRows: 'auto 1fr' }}>
         <Toolbar />
         <div style={{ minHeight: 0, overflow: 'hidden' }}>
-          <GenomeBrowser />
+          {viewMode === 'genome' ? <GenomeBrowser /> : <FilesView />}
         </div>
       </div>
     )

@@ -16,7 +16,8 @@ function applyCsp(): void {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'"
+          // connect-src allows the Ensembl REST API for on-demand genome fetching.
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://rest.ensembl.org"
         ]
       }
     })
@@ -49,7 +50,12 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    // Only hand http(s) URLs to the OS; ignore file:/custom schemes.
+    try {
+      if (/^https?:$/.test(new URL(details.url).protocol)) shell.openExternal(details.url)
+    } catch {
+      /* malformed URL — ignore */
+    }
     return { action: 'deny' }
   })
 
@@ -133,6 +139,24 @@ ipcMain.handle(
     const base64 = args.dataUrl.replace(/^data:[^;]+;base64,/, '')
     await writeFile(res.filePath, Buffer.from(base64, 'base64'))
     return { canceled: false, path: res.filePath }
+  }
+)
+
+// Read a file by absolute path (used to re-open items from the Files list).
+// Restricted to recognized sequence/annotation extensions as defense-in-depth.
+const READABLE_EXT = /\.(gb|gbk|genbank|ape|fa|fasta|fna|seq|txt|gff|gff3|gtf|bed|bedgraph|bg|wig)$/i
+ipcMain.handle(
+  'file:read-path',
+  async (_e, path: string): Promise<{ ok: boolean; name?: string; content?: string; error?: string }> => {
+    if (typeof path !== 'string' || !READABLE_EXT.test(path)) {
+      return { ok: false, error: 'Unsupported file type' }
+    }
+    try {
+      const content = await readFile(path, 'utf-8')
+      return { ok: true, name: path.split(/[/\\]/).pop(), content }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
   }
 )
 

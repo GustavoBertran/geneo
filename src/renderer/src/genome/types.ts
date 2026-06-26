@@ -25,8 +25,14 @@ export interface Locus {
 export interface GenomeMarker {
   id: string
   chrom: string
-  /** 0-based chromosome coordinate of the rule. */
+  /** 0-based chromosome coordinate of the rule (range start). */
   position: number
+  /**
+   * Optional 0-based exclusive end. When set and > position the marker spans a
+   * range and is drawn as a highlighted bar; otherwise it is a single vertical
+   * rule at `position`.
+   */
+  end?: number
   label: string
   color?: string
 }

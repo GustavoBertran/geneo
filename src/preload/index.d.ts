@@ -14,6 +14,7 @@ export interface GeneOApi {
     canceled: boolean
     path?: string
   }>
+  readPath(path: string): Promise<{ ok: boolean; name?: string; content?: string; error?: string }>
 }
 
 declare global {

@@ -14,6 +14,7 @@ import {
 } from '../../genome/viewport'
 import type { Chromosome, GenomeTrackProps, Locus, Track } from '../../genome/types'
 import { buildSnapshotSvg, rasterizeSvgToPng, downloadInBrowser } from '../../genome/export'
+import { ENSEMBL_SPECIES, fetchEnsemblAssembly } from '../../genome/ensembl'
 import { GeneTrack } from './GeneTrack'
 import { FeatureTrack } from './FeatureTrack'
 import { SignalTrack } from './SignalTrack'
@@ -82,6 +83,8 @@ export function GenomeBrowser(): JSX.Element {
   const addMarker = useStore((s) => s.addMarker)
   const removeMarker = useStore((s) => s.removeMarker)
   const clearMarkers = useStore((s) => s.clearMarkers)
+  const setAssembly = useStore((s) => s.setAssembly)
+  const addRecent = useStore((s) => s.addRecent)
 
   const [wrapRef, fullWidth] = useWidth()
   const trackWidth = Math.max(120, fullWidth - GUTTER)
@@ -90,6 +93,10 @@ export function GenomeBrowser(): JSX.Element {
   const [searchText, setSearchText] = useState('')
   const [markerPos, setMarkerPos] = useState('')
   const [markerLabel, setMarkerLabel] = useState('')
+  const [species, setSpecies] = useState('homo_sapiens')
+  const [fetchQuery, setFetchQuery] = useState('')
+  const [fetching, setFetching] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
 
   const chrom: Chromosome | undefined = useMemo(
     () => assembly?.chromosomes.find((c) => c.name === locus?.chrom) ?? assembly?.chromosomes[0],
@@ -176,8 +183,9 @@ export function GenomeBrowser(): JSX.Element {
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch { /* noop */ }
   }
 
-  // Add a position marker. Input is a 1-based coordinate ("7,668,421" or
-  // "chr17:7,668,421"); stored 0-based against the relevant chromosome.
+  // Add a marker. Input is a 1-based coordinate ("7,668,421" or
+  // "chr17:7,668,421") for a vertical rule, OR a 1-based range
+  // ("7,668,421-7,669,000") for a highlighted bar. Stored 0-based.
   const onAddMarker = (): void => {
     const raw = markerPos.trim()
     if (!raw) return
@@ -189,15 +197,59 @@ export function GenomeBrowser(): JSX.Element {
       if (assembly.chromosomes.some((x) => x.name === resolved)) chromName = resolved
       numPart = n ?? ''
     }
-    const num = parseInt(numPart.replace(/[,\s]/g, ''), 10)
-    if (!Number.isFinite(num)) return
-    const position = Math.max(0, num - 1) // 1-based -> 0-based
-    addMarker({ chrom: chromName, position, label: markerLabel.trim() || formatBp(num), color: MARKER_COLOR })
+    let position: number
+    let end: number | undefined
+    let defaultLabel: string
+    const rangeMatch = numPart.replace(/\s/g, '').match(/^([\d,]+)(?:-|\.\.)([\d,]+)$/)
+    if (rangeMatch) {
+      const a = parseInt(rangeMatch[1].replace(/,/g, ''), 10)
+      const b = parseInt(rangeMatch[2].replace(/,/g, ''), 10)
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return
+      const lo = Math.min(a, b)
+      const hi = Math.max(a, b)
+      position = Math.max(0, lo - 1)
+      end = hi
+      defaultLabel = `${formatBp(lo)}–${formatBp(hi)}`
+    } else {
+      const num = parseInt(numPart.replace(/[,\s]/g, ''), 10)
+      if (!Number.isFinite(num)) return
+      position = Math.max(0, num - 1)
+      defaultLabel = formatBp(num)
+    }
+    addMarker({ chrom: chromName, position, end, label: markerLabel.trim() || defaultLabel, color: MARKER_COLOR })
     setMarkerPos('')
     setMarkerLabel('')
-    if (chromName === locus.chrom && (position < locus.start || position >= locus.end)) {
+    const mid = end != null ? (position + end) / 2 : position
+    if (chromName === locus.chrom && (mid < locus.start || mid >= locus.end)) {
       const span = locus.end - locus.start
-      setLocus({ chrom: chromName, start: position - span / 2, end: position + span / 2 })
+      setLocus({ chrom: chromName, start: mid - span / 2, end: mid + span / 2 })
+    }
+  }
+
+  // Fetch a region (locus or gene symbol) on demand from Ensembl.
+  const onFetch = async (): Promise<void> => {
+    const q = fetchQuery.trim()
+    if (!q || fetching) return
+    setFetching(true)
+    setFetchError(null)
+    try {
+      const res = await fetchEnsemblAssembly(species, q)
+      if (res.error || !res.assembly) {
+        setFetchError(res.error ?? 'Fetch failed')
+        return
+      }
+      setAssembly(res.assembly)
+      addRecent({
+        kind: 'genome',
+        name: res.assembly.name,
+        subtitle: res.assembly.defaultLocus?.chrom ?? res.assembly.chromosomes[0]?.name ?? '',
+        source: { type: 'ensembl', species, query: q }
+      })
+      setFetchQuery('')
+    } catch (e) {
+      setFetchError((e as Error).message)
+    } finally {
+      setFetching(false)
     }
   }
 
@@ -209,8 +261,13 @@ export function GenomeBrowser(): JSX.Element {
     if (!root) return
     const snapMarkers = markers
       .filter((m) => m.chrom === locus.chrom)
-      .map((m) => ({ x: viewport.bpToPx(m.position), label: m.label, color: m.color ?? MARKER_COLOR }))
-      .filter((m) => m.x >= -40 && m.x <= trackWidth + 40)
+      .map((m) => ({
+        x: viewport.bpToPx(m.position),
+        x2: m.end != null && m.end > m.position ? viewport.bpToPx(m.end) : undefined,
+        label: m.label,
+        color: m.color ?? MARKER_COLOR
+      }))
+      .filter((m) => (m.x2 ?? m.x) >= -40 && m.x <= trackWidth + 40)
     const { svg, width, height } = buildSnapshotSvg(root, {
       gutter: GUTTER,
       trackWidth,
@@ -241,11 +298,12 @@ export function GenomeBrowser(): JSX.Element {
     }
   }
 
-  const visibleTracks = assembly.tracks.filter((t) => trackVisibility[t.id] ?? t.visible)
   const ticks = niceTicks(locus.start, locus.end, Math.max(6, Math.round(trackWidth / 110)))
-  const visibleMarkers = markers.filter(
-    (m) => m.chrom === locus.chrom && m.position >= locus.start && m.position < locus.end
-  )
+  const visibleMarkers = markers.filter((m) => {
+    if (m.chrom !== locus.chrom) return false
+    const mEnd = m.end != null && m.end > m.position ? m.end : m.position + 1
+    return m.position < locus.end && mEnd > locus.start
+  })
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -297,6 +355,36 @@ export function GenomeBrowser(): JSX.Element {
           <button title="Zoom in" onClick={() => setLocus(zoomLocus(locus, 0.5, (locus.start + locus.end) / 2, chrom))}>+</button>
           <button title="Pan right" onClick={() => setLocus(panLocus(locus, 0.4, chrom))}>▶</button>
         </div>
+
+        {/* On-demand fetch from Ensembl (any locus / gene, any species) */}
+        <div className="row" style={{ gap: 4, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
+          <select
+            value={species}
+            onChange={(e) => setSpecies(e.target.value)}
+            title="Ensembl species"
+            style={{ fontSize: 12, maxWidth: 150 }}
+          >
+            {ENSEMBL_SPECIES.map((s) => (
+              <option key={s.id} value={s.id}>{s.label}</option>
+            ))}
+          </select>
+          <input
+            value={fetchQuery}
+            placeholder="gene or locus"
+            onChange={(e) => { setFetchQuery(e.target.value); setFetchError(null) }}
+            onKeyDown={(e) => e.key === 'Enter' && onFetch()}
+            spellCheck={false}
+            title="Fetch a region from Ensembl — a gene symbol (BRCA1) or a locus (chr16:23,641,000-23,641,800)"
+            style={{ width: 168 }}
+          />
+          <button className="primary" onClick={onFetch} disabled={fetching || !fetchQuery.trim()} title="Download this region from Ensembl">
+            {fetching ? 'Fetching…' : 'Fetch ⤓'}
+          </button>
+        </div>
+        {fetchError && (
+          <span style={{ color: 'var(--bad)', fontSize: 11, maxWidth: 280 }}>{fetchError}</span>
+        )}
+
         <span className="spacer" />
         <span className="tag" style={{ fontFamily: 'var(--mono)' }}>{formatSpan(locus.end - locus.start)}</span>
       </div>
@@ -316,11 +404,12 @@ export function GenomeBrowser(): JSX.Element {
         <span className="faint" style={{ fontSize: 11 }}>Marker</span>
         <input
           value={markerPos}
-          placeholder="position e.g. 7,668,421"
+          placeholder="position or range"
+          title="A single position (7,668,421) draws a line; a range (7,668,421-7,669,000) draws a highlighted bar. Optional chrom prefix, e.g. chr16:23,641,000-23,641,800."
           onChange={(e) => setMarkerPos(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && onAddMarker()}
           spellCheck={false}
-          style={{ width: 170, fontFamily: 'var(--mono)', fontSize: 12 }}
+          style={{ width: 200, fontFamily: 'var(--mono)', fontSize: 12 }}
         />
         <input
           value={markerLabel}
@@ -338,7 +427,11 @@ export function GenomeBrowser(): JSX.Element {
               <span
                 key={m.id}
                 className="tag"
-                title={`${m.chrom}:${formatBp(m.position + 1)}`}
+                title={
+                  m.end != null && m.end > m.position
+                    ? `${m.chrom}:${formatBp(m.position + 1)}–${formatBp(m.end)}`
+                    : `${m.chrom}:${formatBp(m.position + 1)}`
+                }
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'var(--bg-active)' }}
               >
                 <span style={{ width: 8, height: 8, borderRadius: 2, background: m.color ?? MARKER_COLOR }} />
@@ -389,8 +482,11 @@ export function GenomeBrowser(): JSX.Element {
           onPointerUp={onPointerUp}
           style={{ cursor: drag.current ? 'grabbing' : 'grab' }}
         >
-          {visibleTracks.map((track) => {
+          {/* Every track keeps its gutter + checkbox even when hidden, so it can
+              always be toggled back on; only its content collapses when off. */}
+          {assembly.tracks.map((track) => {
             const Comp = TRACK_COMPONENTS[track.kind]
+            const isVisible = trackVisibility[track.id] ?? track.visible
             return (
               <div key={track.id} style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
                 <div
@@ -403,14 +499,16 @@ export function GenomeBrowser(): JSX.Element {
                     fontSize: 11,
                     display: 'flex',
                     alignItems: 'flex-start',
-                    gap: 6
+                    gap: 6,
+                    opacity: isVisible ? 1 : 0.6
                   }}
                 >
                   <input
                     type="checkbox"
-                    checked={trackVisibility[track.id] ?? track.visible}
+                    checked={isVisible}
                     onChange={() => toggleTrack(track.id)}
                     onPointerDown={(e) => e.stopPropagation()}
+                    title={isVisible ? `Hide ${track.name}` : `Show ${track.name}`}
                     style={{ marginTop: 1 }}
                   />
                   <div style={{ minWidth: 0 }}>
@@ -419,17 +517,16 @@ export function GenomeBrowser(): JSX.Element {
                   </div>
                 </div>
                 <div
-                  data-geneo-track-name={track.name}
+                  // only tag VISIBLE tracks so snapshot export skips hidden ones
+                  data-geneo-track-name={isVisible ? track.name : undefined}
                   style={{
                     width: trackWidth,
                     overflowX: 'hidden',
-                    // tall many-isoform gene tracks scroll within a capped body
-                    // so the other tracks stay visible; wheel still zooms.
-                    overflowY: track.kind === 'genes' ? 'auto' : 'hidden',
-                    maxHeight: track.kind === 'genes' ? 340 : undefined
+                    overflowY: isVisible && track.kind === 'genes' ? 'auto' : 'hidden',
+                    maxHeight: isVisible && track.kind === 'genes' ? 340 : undefined
                   }}
                 >
-                  {Comp ? (
+                  {isVisible && Comp ? (
                     <Comp
                       track={track}
                       chrom={chrom}
@@ -439,7 +536,11 @@ export function GenomeBrowser(): JSX.Element {
                       onSelect={setSelectedGenomeId}
                       onHover={setHoveredGenomeId}
                     />
-                  ) : null}
+                  ) : (
+                    <div style={{ height: 20, display: 'flex', alignItems: 'center', paddingLeft: 8, color: 'var(--text-faint)', fontSize: 10 }}>
+                      hidden — tick the box to show
+                    </div>
+                  )}
                 </div>
               </div>
             )
@@ -471,6 +572,21 @@ export function GenomeBrowser(): JSX.Element {
             {visibleMarkers.map((m) => {
               const x = viewport.bpToPx(m.position)
               const color = m.color ?? MARKER_COLOR
+              const isRange = m.end != null && m.end > m.position
+              if (isRange) {
+                const x2 = viewport.bpToPx(m.end as number)
+                const left = Math.max(-1, Math.min(x, x2))
+                const right = Math.min(trackWidth + 1, Math.max(x, x2))
+                return (
+                  <g key={m.id}>
+                    <rect x={left} y={RULER_H} width={Math.max(1, right - left)} height="100%" fill={color} fillOpacity={0.13} />
+                    <line x1={left} y1={RULER_H} x2={left} y2="100%" stroke={color} strokeWidth={1.5} strokeDasharray="4 3" />
+                    <line x1={right} y1={RULER_H} x2={right} y2="100%" stroke={color} strokeWidth={1.5} strokeDasharray="4 3" />
+                    <rect x={left} y={RULER_H} width={Math.max(1, right - left)} height={5} fill={color} />
+                    <text x={left + 4} y={RULER_H + 14} fontSize={10} fill={color} stroke="var(--bg)" strokeWidth={3} style={{ paintOrder: 'stroke' }}>{m.label}</text>
+                  </g>
+                )
+              }
               return (
                 <g key={m.id}>
                   <line x1={x} y1={RULER_H} x2={x} y2="100%" stroke={color} strokeWidth={1.5} strokeDasharray="4 3" />

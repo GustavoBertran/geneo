@@ -13,7 +13,50 @@ import type { GenomeAssembly, GenomeMarker, Locus, Track } from '../genome/types
 import { clampLocus } from '../genome/viewport'
 
 /** Which main center panel is showing. */
-export type ViewMode = 'map' | 'sequence' | 'enzymes' | 'orfs' | 'primers' | 'genome'
+export type ViewMode = 'map' | 'sequence' | 'enzymes' | 'orfs' | 'primers' | 'genome' | 'files'
+
+/** How a recently-opened item can be re-opened. */
+export type RecentSource =
+  | { type: 'sample-plasmid'; sampleId: string }
+  | { type: 'plasmid-file'; path: string }
+  | { type: 'sample-genome'; assemblyId: string }
+  | { type: 'genome-file'; path: string }
+  | { type: 'ensembl'; species: string; query: string }
+
+/** An entry in the "Files" / recently-worked-on list. */
+export interface RecentItem {
+  id: string
+  kind: 'plasmid' | 'genome'
+  name: string
+  subtitle: string
+  openedAt: number
+  source: RecentSource
+}
+
+const RECENT_KEY = 'geneo.recentItems'
+const RECENT_MAX = 60
+
+function loadRecent(): RecentItem[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY)
+    return raw ? (JSON.parse(raw) as RecentItem[]) : []
+  } catch {
+    return []
+  }
+}
+
+function persistRecent(items: RecentItem[]): void {
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(items))
+  } catch {
+    /* storage unavailable — non-fatal */
+  }
+}
+
+/** Stable signature so re-opening the same thing updates rather than duplicates. */
+function recentSig(s: RecentSource): string {
+  return JSON.stringify(s)
+}
 
 /** How the map view draws the molecule. */
 export type MapStyle = 'circular' | 'linear'
@@ -87,6 +130,13 @@ export interface AppState {
   }) => void
   setSelectedGenomeId: (id: string | null) => void
   setHoveredGenomeId: (id: string | null) => void
+
+  // --- recent files ("Files" view) ---------------------------------------
+  recentItems: RecentItem[]
+  /** Record an opened item (dedupes by source, moves to front, persists). */
+  addRecent: (item: Omit<RecentItem, 'id' | 'openedAt'>) => void
+  removeRecent: (id: string) => void
+  clearRecent: () => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -246,5 +296,27 @@ export const useStore = create<AppState>((set) => ({
   clearMarkers: () => set({ markers: [] }),
 
   setSelectedGenomeId: (id) => set({ selectedGenomeId: id }),
-  setHoveredGenomeId: (id) => set({ hoveredGenomeId: id })
+  setHoveredGenomeId: (id) => set({ hoveredGenomeId: id }),
+
+  recentItems: loadRecent(),
+  addRecent: (item) =>
+    set((s) => {
+      const sig = recentSig(item.source)
+      const without = s.recentItems.filter((r) => recentSig(r.source) !== sig)
+      const entry: RecentItem = { ...item, id: makeId('recent'), openedAt: Date.now() }
+      const next = [entry, ...without].slice(0, RECENT_MAX)
+      persistRecent(next)
+      return { recentItems: next }
+    }),
+  removeRecent: (id) =>
+    set((s) => {
+      const next = s.recentItems.filter((r) => r.id !== id)
+      persistRecent(next)
+      return { recentItems: next }
+    }),
+  clearRecent: () =>
+    set(() => {
+      persistRecent([])
+      return { recentItems: [] }
+    })
 }))

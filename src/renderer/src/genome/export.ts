@@ -45,6 +45,8 @@ function svgHeight(el: SVGSVGElement): number {
 export interface SnapshotMarker {
   /** x within the track area (px from track-area left). */
   x: number
+  /** Optional range end x; when set, the marker is drawn as a bar [x, x2). */
+  x2?: number
   label: string
   color: string
 }
@@ -108,9 +110,21 @@ export function buildSnapshotSvg(root: HTMLElement, opts: SnapshotOptions): Snap
   // --- markers overlay (drawn last, on top) ---
   for (const m of markers) {
     const mx = gutter + m.x
-    parts.push(`<line x1="${mx}" y1="${rulerHeight}" x2="${mx}" y2="${totalHeight}" stroke="${m.color}" stroke-width="1.5" stroke-dasharray="4 3"/>`)
-    parts.push(`<path d="M ${mx - 4} ${rulerHeight} L ${mx + 4} ${rulerHeight} L ${mx} ${rulerHeight + 6} Z" fill="${m.color}"/>`)
-    parts.push(`<text x="${mx + 6}" y="${rulerHeight + 13}" font-size="10" font-family="sans-serif" fill="${m.color}">${escapeXml(m.label)}</text>`)
+    if (m.x2 != null && m.x2 !== m.x) {
+      // range marker → highlighted bar
+      const left = gutter + Math.min(m.x, m.x2)
+      const right = gutter + Math.max(m.x, m.x2)
+      const w = Math.max(1, right - left)
+      parts.push(`<rect x="${left}" y="${rulerHeight}" width="${w}" height="${totalHeight - rulerHeight}" fill="${m.color}" fill-opacity="0.13"/>`)
+      parts.push(`<rect x="${left}" y="${rulerHeight}" width="${w}" height="5" fill="${m.color}"/>`)
+      parts.push(`<line x1="${left}" y1="${rulerHeight}" x2="${left}" y2="${totalHeight}" stroke="${m.color}" stroke-width="1.5" stroke-dasharray="4 3"/>`)
+      parts.push(`<line x1="${right}" y1="${rulerHeight}" x2="${right}" y2="${totalHeight}" stroke="${m.color}" stroke-width="1.5" stroke-dasharray="4 3"/>`)
+      parts.push(`<text x="${left + 4}" y="${rulerHeight + 14}" font-size="10" font-family="sans-serif" fill="${m.color}">${escapeXml(m.label)}</text>`)
+    } else {
+      parts.push(`<line x1="${mx}" y1="${rulerHeight}" x2="${mx}" y2="${totalHeight}" stroke="${m.color}" stroke-width="1.5" stroke-dasharray="4 3"/>`)
+      parts.push(`<path d="M ${mx - 4} ${rulerHeight} L ${mx + 4} ${rulerHeight} L ${mx} ${rulerHeight + 6} Z" fill="${m.color}"/>`)
+      parts.push(`<text x="${mx + 6}" y="${rulerHeight + 13}" font-size="10" font-family="sans-serif" fill="${m.color}">${escapeXml(m.label)}</text>`)
+    }
   }
 
   const bg = tokens['--bg'] ?? '#16181d'

@@ -15,8 +15,21 @@ const VIEWS: { id: ViewMode; label: string }[] = [
   { id: 'enzymes', label: 'Enzymes' },
   { id: 'orfs', label: 'ORFs' },
   { id: 'primers', label: 'Primers' },
-  { id: 'genome', label: 'Genome' }
+  { id: 'genome', label: 'Genome' },
+  { id: 'files', label: 'Files' }
 ]
+
+function plasmidSubtitle(seqLen: number, topology: string): string {
+  return `${seqLen.toLocaleString()} bp · ${topology}`
+}
+
+/** Guard a window.api method (absent in the browser-only preview). */
+function ensureDesktop(method: 'openFile' | 'saveFile'): boolean {
+  if (typeof window.api?.[method] === 'function') return true
+  // eslint-disable-next-line no-alert
+  alert('Opening and saving files requires the GeneO desktop app.')
+  return false
+}
 
 export function Toolbar(): JSX.Element {
   const viewMode = useStore((s) => s.viewMode)
@@ -29,19 +42,21 @@ export function Toolbar(): JSX.Element {
   const setLocus = useStore((s) => s.setLocus)
   const setAssembly = useStore((s) => s.setAssembly)
   const assembly = useStore((s) => s.assembly)
+  const addRecent = useStore((s) => s.addRecent)
 
   async function onLoadGenome(): Promise<void> {
-    const res = await window.api.openFile({
-      filters: [
-        { name: 'Genome tracks', extensions: ['gff', 'gff3', 'gtf', 'bed', 'bedgraph', 'bg', 'wig', 'fasta', 'fa', 'fna'] },
-        { name: 'Annotations (GFF/GTF/BED)', extensions: ['gff', 'gff3', 'gtf', 'bed'] },
-        { name: 'Signal (bedGraph/WIG)', extensions: ['bedgraph', 'bg', 'wig'] },
-        { name: 'Reference (FASTA)', extensions: ['fasta', 'fa', 'fna'] },
-        { name: 'All files', extensions: ['*'] }
-      ]
-    })
-    if (res.canceled || res.content == null) return
+    if (!ensureDesktop('openFile')) return
     try {
+      const res = await window.api.openFile({
+        filters: [
+          { name: 'Genome tracks', extensions: ['gff', 'gff3', 'gtf', 'bed', 'bedgraph', 'bg', 'wig', 'fasta', 'fa', 'fna'] },
+          { name: 'Annotations (GFF/GTF/BED)', extensions: ['gff', 'gff3', 'gtf', 'bed'] },
+          { name: 'Signal (bedGraph/WIG)', extensions: ['bedgraph', 'bg', 'wig'] },
+          { name: 'Reference (FASTA)', extensions: ['fasta', 'fa', 'fna'] },
+          { name: 'All files', extensions: ['*'] }
+        ]
+      })
+      if (res.canceled || res.content == null) return
       const loaded = loadGenomeFile(res.name ?? 'track', res.content)
       mergeGenomeData(loaded)
       const t = loaded.tracks[0]
@@ -52,6 +67,14 @@ export function Toolbar(): JSX.Element {
       } else if (loaded.sequence) {
         setLocus({ chrom: loaded.sequence.chrom, start: loaded.sequence.start, end: loaded.sequence.start + loaded.sequence.bases.length })
       }
+      if (res.path) {
+        addRecent({
+          kind: 'genome',
+          name: res.name ?? 'track',
+          subtitle: `${loaded.format.toUpperCase()} · ${first?.chrom ?? loaded.sequence?.chrom ?? ''}`,
+          source: { type: 'genome-file', path: res.path }
+        })
+      }
     } catch (err) {
       // eslint-disable-next-line no-alert
       alert(`Could not load genome file: ${(err as Error).message}`)
@@ -59,11 +82,20 @@ export function Toolbar(): JSX.Element {
   }
 
   async function onOpen(): Promise<void> {
-    const res = await window.api.openFile()
-    if (res.canceled || !res.content) return
+    if (!ensureDesktop('openFile')) return
     try {
+      const res = await window.api.openFile()
+      if (res.canceled || !res.content) return
       const rec = normalizeRecord(parseSequenceFile(res.name ?? 'sequence', res.content))
       setRecord(rec, res.path ?? null)
+      if (res.path) {
+        addRecent({
+          kind: 'plasmid',
+          name: rec.name,
+          subtitle: plasmidSubtitle(rec.sequence.length, rec.topology),
+          source: { type: 'plasmid-file', path: res.path }
+        })
+      }
     } catch (err) {
       // eslint-disable-next-line no-alert
       alert(`Could not parse file: ${(err as Error).message}`)
@@ -71,23 +103,31 @@ export function Toolbar(): JSX.Element {
   }
 
   async function onSaveGenBank(): Promise<void> {
-    if (!record) return
-    const content = serializeGenBank(record)
-    await window.api.saveFile({
-      content,
-      defaultName: `${record.name}.gb`,
-      filters: [{ name: 'GenBank', extensions: ['gb'] }]
-    })
+    if (!record || !ensureDesktop('saveFile')) return
+    try {
+      await window.api.saveFile({
+        content: serializeGenBank(record),
+        defaultName: `${record.name}.gb`,
+        filters: [{ name: 'GenBank', extensions: ['gb'] }]
+      })
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      alert(`Could not save: ${(err as Error).message}`)
+    }
   }
 
   async function onSaveFasta(): Promise<void> {
-    if (!record) return
-    const content = serializeFasta(record)
-    await window.api.saveFile({
-      content,
-      defaultName: `${record.name}.fasta`,
-      filters: [{ name: 'FASTA', extensions: ['fasta'] }]
-    })
+    if (!record || !ensureDesktop('saveFile')) return
+    try {
+      await window.api.saveFile({
+        content: serializeFasta(record),
+        defaultName: `${record.name}.fasta`,
+        filters: [{ name: 'FASTA', extensions: ['fasta'] }]
+      })
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      alert(`Could not save: ${(err as Error).message}`)
+    }
   }
 
   return (
@@ -114,7 +154,15 @@ export function Toolbar(): JSX.Element {
             title="Switch the bundled genome locus"
             onChange={(e) => {
               const a = sampleGenomes.find((g) => g.id === e.target.value)
-              if (a) setAssembly(a)
+              if (a) {
+                setAssembly(a)
+                addRecent({
+                  kind: 'genome',
+                  name: a.name,
+                  subtitle: a.defaultLocus?.chrom ?? a.chromosomes[0]?.name ?? '',
+                  source: { type: 'sample-genome', assemblyId: a.id }
+                })
+              }
             }}
             style={{ background: 'var(--bg-input)' }}
           >
@@ -134,8 +182,16 @@ export function Toolbar(): JSX.Element {
             value=""
             title="Load a bundled sample plasmid"
             onChange={(e) => {
-              if (e.target.value === 'puc19') setRecord(puc19)
-              else if (e.target.value === 'demo') setRecord(samplePlasmid)
+              const rec = e.target.value === 'puc19' ? puc19 : e.target.value === 'demo' ? samplePlasmid : null
+              if (rec) {
+                setRecord(rec)
+                addRecent({
+                  kind: 'plasmid',
+                  name: rec.name,
+                  subtitle: plasmidSubtitle(rec.sequence.length, rec.topology),
+                  source: { type: 'sample-plasmid', sampleId: e.target.value }
+                })
+              }
               e.target.value = ''
             }}
             style={{ background: 'var(--bg-input)' }}
